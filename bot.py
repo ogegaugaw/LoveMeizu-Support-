@@ -494,8 +494,6 @@ async def error_handler(
 # =========================
 
 def main():
-    threading.Thread(target=run_health_server, daemon=True).start()
-
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
