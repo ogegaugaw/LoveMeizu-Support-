@@ -151,13 +151,106 @@ trang Key System.
 nếu ứng dụng quy định key chỉ sử dụng một lần.
 """
 
+# ============================================================
+# ỨNG DỤNG - LOVE MEIZU
+# ============================================================
 
-# =========================================================
-# APPLICATION MENU
-# =========================================================
+APPS_TEXT = """
+📱 <b>ỨNG DỤNG</b>
+
+Khu vực tổng hợp các ứng dụng được
+LoveMeizu chia sẻ.
+
+Chọn danh mục bên dưới để xem ứng dụng.
+"""
+
+# ============================================================
+# NỘI DUNG CÁC DANH MỤC
+# ============================================================
+
+APPS_FEATURED_TEXT = """
+⭐ <b>APP CHÚ Ý</b>
+
+Các ứng dụng và tiện ích LoveMeizu
+đang giới thiệu nổi bật.
+
+📦 Bấm vào ứng dụng bên dưới để tải.
+"""
+
+APPS_VH_TEXT = """
+🇻🇳 <b>APP VIỆT HOÁ</b>
+
+Danh mục các ứng dụng được Việt hoá
+hoặc có nội dung tiếng Việt do LoveMeizu
+chia sẻ.
+
+📦 Bấm vào ứng dụng bên dưới để tải.
+"""
+
+APPS_UTILS_TEXT = """
+🧰 <b>TIỆN ÍCH ANDROID</b>
+
+Các ứng dụng tiện ích dành cho Android,
+bao gồm những công cụ hỗ trợ tùy chỉnh
+và sử dụng thiết bị.
+
+📦 Hiện chưa có ứng dụng trong mục này.
+"""
+
+# ============================================================
+# APP CHÚ Ý
+# ============================================================
+
+APP_FEATURED = [
+    (
+        "🎵 TikTok Mod",
+        "https://link4m.net/1zHF8"
+    ),
+    (
+        "🔤 2 Font Minecraft + Chữ đẹp",
+        "https://link4sub.com/pfBbI6M30s"
+    ),
+    (
+        "📷 Black MagicCamera + 19 LUTs",
+        "https://link4m.net/MF4u3"
+    ),
+    (
+        "💧 File Setup Liquid ogegaugaw3",
+        "https://link4m.net/qeUkOYsG"
+    ),
+    (
+        "🚀 Void Launcher",
+        "https://link4m.net/J1L15Ycg"
+    ),
+]
+
+# ============================================================
+# APP VIỆT HOÁ
+# ============================================================
+
+APP_VIET_HOA = [
+    (
+        "🏝️ Super Island Pro-Siri AI 6.8.0",
+        "https://link4sub.com/QqfhXvy6FN"
+    ),
+    (
+        "💧 Liquid Island VH 2.0.0",
+        "https://link4m.org/kBBqRb9"
+    ),
+]
+
+# ============================================================
+# MENU ỨNG DỤNG CHÍNH
+# ============================================================
 
 def apps_menu():
-    keyboard = [
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⭐ APP CHÚ Ý",
+                callback_data="apps_featured"
+            )
+        ],
         [
             InlineKeyboardButton(
                 "🇻🇳 APP VIỆT HOÁ",
@@ -172,66 +265,76 @@ def apps_menu():
         ],
         [
             InlineKeyboardButton(
-                "⭐ APP NỔI BẬT",
-                callback_data="apps_featured"
+                "🔙 Quay lại",
+                callback_data="back_main"
             )
         ],
-        [
+    ])
+
+
+# ============================================================
+# MENU APP CHÚ Ý
+# ============================================================
+
+def apps_featured_menu():
+    keyboard = []
+
+    for name, url in APP_FEATURED:
+        keyboard.append([
             InlineKeyboardButton(
-                "⬅️ Quay lại",
-                callback_data="menu_main"
+                name,
+                url=url
             )
-        ],
-    ]
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 Quay lại",
+            callback_data="menu_apps"
+        )
+    ])
 
     return InlineKeyboardMarkup(keyboard)
 
 
-APPS_TEXT = """
-📱 <b>ỨNG DỤNG</b>
+# ============================================================
+# MENU APP VIỆT HOÁ
+# ============================================================
 
-Khu vực tổng hợp các ứng dụng được
-LoveMeizu chia sẻ.
+def apps_vh_menu():
+    keyboard = []
 
-Bạn có thể chọn loại ứng dụng bên dưới.
-"""
+    for name, url in APP_VIET_HOA:
+        keyboard.append([
+            InlineKeyboardButton(
+                name,
+                url=url
+            )
+        ])
 
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 Quay lại",
+            callback_data="menu_apps"
+        )
+    ])
 
-APPS_VH_TEXT = """
-🇻🇳 <b>APP VIỆT HOÁ</b>
-
-Danh mục các ứng dụng được Việt hoá
-hoặc có nội dung tiếng Việt do LoveMeizu
-chia sẻ.
-
-📦 Khi có app mới, thông tin tải xuống
-sẽ được cập nhật theo từng bài/app.
-"""
-
-
-APPS_UTILS_TEXT = """
-🧰 <b>TIỆN ÍCH ANDROID</b>
-
-Các ứng dụng tiện ích dành cho Android,
-bao gồm những công cụ hỗ trợ tùy chỉnh
-và sử dụng thiết bị.
-
-📌 Danh sách app cụ thể sẽ được cập nhật
-khi có bản phát hành mới.
-"""
+    return InlineKeyboardMarkup(keyboard)
 
 
-APPS_FEATURED_TEXT = """
-⭐ <b>APP NỔI BẬT</b>
+# ============================================================
+# MENU TIỆN ÍCH ANDROID
+# ============================================================
 
-Đây là khu vực dành cho những ứng dụng
-được LoveMeizu giới thiệu nổi bật.
-
-🆕 Khi có app nổi bật mới, thông tin
-sẽ được cập nhật tại đây.
-"""
-
-
+def apps_utils_menu():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔙 Quay lại",
+                callback_data="menu_apps"
+            )
+        ]
+    ])
 # =========================================================
 # FIX APP
 # =========================================================
