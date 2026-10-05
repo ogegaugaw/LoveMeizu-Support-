@@ -1,375 +1,290 @@
-const express = require("express");
-const cors = require("cors");
-const crypto = require("crypto");
-const admin = require("firebase-admin");
-require("dotenv").config();
-
-const app = express();
-
-app.use(cors());
-app.use(express.json());
-
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
-  : require("./ogekeyl4m-service-account.json");
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL
-});
-
-const db = admin.database();
-
-function randomString(length = 9) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let result = "";
-
-  for (let i = 0; i < length; i++) {
-    result += chars[crypto.randomInt(0, chars.length)];
-  }
-
-  return result;
-}
-
-function generateKey() {
-  return "lovemeizu_" + randomString(9);
-}
-
-function generateToken() {
-  return crypto.randomBytes(32).toString("hex");
-}
-
-app.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    service: "meizulover-key-system"
-  });
-});
-
-app.post("/create", async (req, res) => {
-  let keyRef = null;
-
-  try {
-    const key = generateKey();
-    const token = generateToken();
-    const createdAt = Date.now();
-
-    const destination =
-      `${process.env.BASE_URL}/get-key.html?token=${encodeURIComponent(token)}`;
-
-    keyRef = db.ref("keys/" + key);
-
-    await keyRef.set({
-      created_at: createdAt,
-      Link4m: "",
-      token: token,
-      used: false,
-      claimed: false,
-      link4m_verified: false
-    });
-
-    const apiUrl =
-      "https://link4m.co/api-shorten/v2" +
-      "?api=" + encodeURIComponent(process.env.LINK4M_API_KEY) +
-      "&url=" + encodeURIComponent(destination);
-
-    const response = await fetch(apiUrl);
-    const responseText = await response.text();
-
-    if (!response.ok) {
-      throw new Error(
-        "Link4M HTTP " + response.status + " | " + responseText
-      );
-    }
-
-    let data;
-
-    try {
-      data = JSON.parse(responseText);
-    } catch (error) {
-      throw new Error("Link4M returned invalid JSON");
-    }
-
-    if (data.status !== "success" || !data.shortenedUrl) {
-      throw new Error("Link4M failed");
-    }
-
-    await keyRef.update({
-      Link4m: data.shortenedUrl
-    });
-
-    return res.json({
-      success: true,
-      token: token,
-      shortUrl: data.shortenedUrl
-    });
-
-  } catch (error) {
-    console.error("CREATE ERROR:", error);
-
-    if (keyRef) {
-      try {
-        await keyRef.remove();
-      } catch (cleanupError) {
-        console.error("CREATE CLEANUP ERROR:", cleanupError);
-      }
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: "CREATE_FAILED"
-    });
-  }
-});
-
-async function findKeyByToken(token) {
-  const snapshot = await db
-    .ref("keys")
-    .orderByChild("token")
-    .equalTo(token)
-    .once("value");
-
-  if (!snapshot.exists()) {
-    return null;
-  }
-
-  const data = snapshot.val();
-  const names = Object.keys(data);
-
-  if (!names.length) {
-    return null;
-  }
-
-  const key = names[0];
-
-  return {
-    key: key,
-    data: data[key]
-  };
-}
-
-app.post("/session-info", async (req, res) => {
-  try {
-    const token = String(req.body.token || "").trim();
-
-    if (!token) {
-      return res.json({
-        success: false,
-        error: "MISSING_TOKEN"
-      });
-    }
-
-    const result = await findKeyByToken(token);
-
-    if (!result) {
-      return res.json({
-        success: false,
-        error: "INVALID_TOKEN"
-      });
-    }
-
-    return res.json({
-      success: true,
-      used: result.data.used === true,
-      claimed: result.data.claimed === true,
-      link4m_verified: result.data.link4m_verified === true
-    });
-
-  } catch (error) {
-    console.error("SESSION INFO ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: "SESSION_INFO_FAILED"
-    });
-  }
-});
-
-app.post("/claim", async (req, res) => {
-  try {
-    const token = String(req.body.token || "").trim();
-
-    if (!token) {
-      return res.json({
-        success: false,
-        error: "MISSING_TOKEN"
-      });
-    }
-
-    const result = await findKeyByToken(token);
-
-    if (!result) {
-      return res.json({
-        success: false,
-        error: "INVALID_TOKEN"
-      });
-    }
-
-    const ref = db.ref("keys/" + result.key);
-    const snapshot = await ref.once("value");
-
-    if (!snapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "KEY_NOT_FOUND"
-      });
-    }
-
-    const data = snapshot.val();
-
-    if (data.used === true) {
-      return res.json({
-        success: false,
-        error: "KEY_USED"
-      });
-    }
-
-    if (data.link4m_verified !== true) {
-      return res.json({
-        success: false,
-        error: "LINK4M_NOT_COMPLETED"
-      });
-    }
-
-    const transaction = await ref
-      .child("claimed")
-      .transaction((claimed) => {
-        if (claimed === true) {
-          return;
-        }
-
-        return true;
-      });
-
-    if (!transaction.committed) {
-      return res.json({
-        success: false,
-        error: "KEY_ALREADY_CLAIMED"
-      });
-    }
-
-    await ref.update({
-      claimedAt: Date.now()
-    });
-
-    return res.json({
-      success: true,
-      key: result.key
-    });
-
-  } catch (error) {
-    console.error("CLAIM ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: "CLAIM_FAILED"
-    });
-  }
-});
-
-app.post("/verify", async (req, res) => {
-  try {
-    const key = String(req.body.key || "").trim();
-
-    if (!key) {
-      return res.json({
-        success: false,
-        error: "EMPTY_KEY"
-      });
-    }
-
-    const snapshot = await db
-      .ref("keys/" + key)
-      .once("value");
-
-    if (!snapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "INVALID_KEY"
-      });
-    }
-
-    const data = snapshot.val();
-
-    if (data.used === true) {
-      return res.json({
-        success: false,
-        error: "KEY_USED"
-      });
-    }
-
-    return res.json({
-      success: true
-    });
-
-  } catch (error) {
-    console.error("VERIFY ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: "VERIFY_FAILED"
-    });
-  }
-});
-
-app.post("/consume", async (req, res) => {
-  try {
-    const key = String(req.body.key || "").trim();
-
-    if (!key) {
-      return res.json({
-        success: false,
-        error: "EMPTY_KEY"
-      });
-    }
-
-    const ref = db.ref("keys/" + key);
-    const snapshot = await ref.once("value");
-
-    if (!snapshot.exists()) {
-      return res.json({
-        success: false,
-        error: "INVALID_KEY"
-      });
-    }
-
-    const result = await ref
-      .child("used")
-      .transaction((used) => {
-        if (used === true) {
-          return;
-        }
-
-        return true;
-      });
-
-    if (!result.committed) {
-      return res.json({
-        success: false,
-        error: "KEY_ALREADY_USED"
-      });
-    }
-
-    await ref.update({
-      usedAt: Date.now()
-    });
-
-    return res.json({
-      success: true
-    });
-
-  } catch (error) {
-    console.error("CONSUME ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: "CONSUME_FAILED"
-    });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
-});
+import os
+import logging
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+
+# =========================
+# CONFIG
+# =========================
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "Chưa thiết lập BOT_TOKEN. "
+        "Hãy thêm BOT_TOKEN trong Environment Variables của Render."
+    )
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# =========================
+# MENU
+# =========================
+
+def main_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("🔑 GET KEY", callback_data="get_key"),
+            InlineKeyboardButton("📱 ỨNG DỤNG", callback_data="apps"),
+        ],
+        [
+            InlineKeyboardButton("🛠️ FIX LỖI APP", callback_data="fix"),
+            InlineKeyboardButton("🔗 LINK BIO", callback_data="bio"),
+        ],
+        [
+            InlineKeyboardButton("🆕 APP MỚI", callback_data="new_apps"),
+            InlineKeyboardButton("❓ HƯỚNG DẪN", callback_data="guide"),
+        ],
+        [
+            InlineKeyboardButton("🆘 HỖ TRỢ", callback_data="support"),
+            InlineKeyboardButton("ℹ️ THÔNG TIN", callback_data="info"),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================
+# /start
+# =========================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user = update.effective_user
+
+    text = (
+        f"👋 Chào {user.first_name}!\n\n"
+        "🤖 Chào mừng bạn đến với LoveMeizu Support.\n\n"
+        "📱 Nơi chia sẻ ứng dụng Android, app Việt hoá "
+        "và các tiện ích dành cho Android.\n\n"
+        "👇 Chọn chức năng bên dưới để tiếp tục."
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=main_keyboard(),
+        )
+
+
+# =========================
+# FIX LỖI APP
+# =========================
+
+async def fixloiapp(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    text = (
+        "🛠️ FIX LỖI APP\n\n"
+        "Nếu ứng dụng bị lỗi, văng hoặc không hoạt động:\n\n"
+        "1️⃣ Kiểm tra đúng phiên bản APK.\n"
+        "2️⃣ Thử xoá dữ liệu ứng dụng.\n"
+        "3️⃣ Cài lại bản mới nhất.\n"
+        "4️⃣ Nếu vẫn lỗi, gửi tên app + mô tả lỗi cho hỗ trợ.\n\n"
+        "💬 Bạn có thể liên hệ hỗ trợ để được kiểm tra."
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=main_keyboard(),
+        )
+
+
+# =========================
+# CALLBACK
+# =========================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    # -------------------------
+    # GET KEY
+    # -------------------------
+
+    if data == "get_key":
+        text = (
+            "🔑 GET KEY\n\n"
+            "Bạn có thể lấy key thông qua hệ thống Key System "
+            "của LoveMeizu.\n\n"
+            "🌐 Link lấy key:\n"
+            "https://ogegaugaw.github.io/ogebeta1/index.html"
+        )
+
+    # -------------------------
+    # APPS
+    # -------------------------
+
+    elif data == "apps":
+        text = (
+            "📱 ỨNG DỤNG\n\n"
+            "LoveMeizu chia sẻ:\n\n"
+            "• 📱 Ứng dụng Android\n"
+            "• 🇻🇳 App Việt hoá\n"
+            "• 🧰 Tiện ích Android\n"
+            "• ✨ Các bản cập nhật mới\n\n"
+            "Theo dõi kênh để nhận app mới."
+        )
+
+    # -------------------------
+    # FIX
+    # -------------------------
+
+    elif data == "fix":
+        text = (
+            "🛠️ FIX LỖI APP\n\n"
+            "Nếu app bị văng hoặc lỗi, hãy gửi:\n\n"
+            "📱 Tên ứng dụng\n"
+            "📦 Phiên bản\n"
+            "❌ Mô tả lỗi\n"
+            "📸 Ảnh/video lỗi nếu có\n\n"
+            "Mình sẽ hỗ trợ kiểm tra."
+        )
+
+    # -------------------------
+    # BIO
+    # -------------------------
+
+    elif data == "bio":
+        text = (
+            "🔗 LINK BIO\n\n"
+            "Tổng hợp link LoveMeizu:\n\n"
+            "https://beacons.ai/ogegaugaw"
+        )
+
+    # -------------------------
+    # APP MỚI
+    # -------------------------
+
+    elif data == "new_apps":
+        text = (
+            "🆕 APP MỚI\n\n"
+            "Các ứng dụng và bản Việt hoá mới "
+            "sẽ được cập nhật thường xuyên.\n\n"
+            "📢 Theo dõi LoveMeizu để không bỏ lỡ."
+        )
+
+    # -------------------------
+    # HƯỚNG DẪN
+    # -------------------------
+
+    elif data == "guide":
+        text = (
+            "❓ HƯỚNG DẪN\n\n"
+            "🔑 GET KEY\n"
+            "→ Lấy key thông qua hệ thống Key System.\n\n"
+            "📱 ỨNG DỤNG\n"
+            "→ Xem thông tin ứng dụng được chia sẻ.\n\n"
+            "🛠️ FIX LỖI APP\n"
+            "→ Xem hướng dẫn xử lý lỗi.\n\n"
+            "🔗 LINK BIO\n"
+            "→ Mở trang tổng hợp liên kết."
+        )
+
+    # -------------------------
+    # SUPPORT
+    # -------------------------
+
+    elif data == "support":
+        text = (
+            "🆘 HỖ TRỢ\n\n"
+            "Nếu bạn gặp lỗi với app, hãy gửi:\n\n"
+            "• Tên app\n"
+            "• Phiên bản app\n"
+            "• Thiết bị đang sử dụng\n"
+            "• Nội dung lỗi\n"
+            "• Ảnh/video nếu có\n\n"
+            "💬 LoveMeizu sẽ hỗ trợ khi có thể."
+        )
+
+    # -------------------------
+    # INFO
+    # -------------------------
+
+    elif data == "info":
+        text = (
+            "ℹ️ THÔNG TIN\n\n"
+            "❤️ LoveMeizu\n\n"
+            "📱 Chia sẻ app Android\n"
+            "🇻🇳 Việt hoá ứng dụng\n"
+            "🧰 Tiện ích Android\n"
+            "🛠️ Hỗ trợ & sửa lỗi\n\n"
+            "Cảm ơn bạn đã sử dụng LoveMeizu."
+        )
+
+    else:
+        text = "❌ Không tìm thấy chức năng này."
+
+    await query.edit_message_text(
+        text,
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    logger.error(
+        "Bot error: %s",
+        context.error,
+        exc_info=context.error,
+    )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CommandHandler("fixloiapp", fixloiapp)
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    app.add_error_handler(error_handler)
+
+    print("🤖 LoveMeizu Bot đang chạy...")
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
