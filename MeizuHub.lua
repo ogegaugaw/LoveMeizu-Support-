@@ -75,6 +75,7 @@ local state = {
     theme = CONFIG.DefaultTheme,
     scale = CONFIG.DefaultScale,
     reduceMotion = false,
+    liveRefresh = true,
     glassOpacity = 0.16,
     connections = {},
     pageButtons = {},
@@ -989,12 +990,97 @@ local function countPlayerCharacters()
     return count
 end
 
+-- Read-only utilities sourced from the original Info/Status, Farming, Quest and Raid groups.
+local function getGameClockText()
+    local clock = Lighting.ClockTime
+    local hours = math.floor(clock)
+    local minutes = math.floor((clock - hours) * 60 + 0.5)
+    if minutes >= 60 then hours = (hours + 1) % 24; minutes = 0 end
+    local period = (hours >= 6 and hours < 18) and "Daylight" or "Night"
+    return ("%02d:%02d game time • %s"):format(hours, minutes, period)
+end
+
+local function getClientClockText()
+    local ok, value = pcall(function() return os.date("%Y-%m-%d %H:%M:%S") end)
+    return ok and tostring(value) or "Local clock unavailable"
+end
+
+local function getVisibleEnemySummary()
+    local enemies = Workspace:FindFirstChild("Enemies")
+    if not enemies then return "Workspace.Enemies not found; target hierarchy is unknown." end
+    local count, nearestName, nearestDistance = 0, nil, math.huge
+    local character = LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    for _, model in ipairs(enemies:GetChildren()) do
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        local targetRoot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+        if humanoid and humanoid.Health > 0 then
+            count += 1
+            if rootPart and targetRoot and targetRoot:IsA("BasePart") then
+                local distance = (targetRoot.Position - rootPart.Position).Magnitude
+                if distance < nearestDistance then
+                    nearestDistance, nearestName = distance, model.Name
+                end
+            end
+        end
+    end
+    if nearestName then
+        return ("Visible living models: %d • Nearest: %s (%.0f studs)"):format(count, nearestName, nearestDistance)
+    end
+    return ("Visible living models: %d • Nearest distance unavailable"):format(count)
+end
+
+local function getQuestUiSummary()
+    local main = PlayerGui:FindFirstChild("Main")
+    if not main then return "Quest UI container 'Main' is not present on this client." end
+    local candidates = {}
+    for _, item in ipairs(main:GetDescendants()) do
+        if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
+            local textValue = item.Text
+            local lower = string.lower(textValue)
+            if lower:find("quest", 1, true) or lower:find("mission", 1, true) or lower:find("defeat", 1, true) or lower:find("kill", 1, true) then
+                table.insert(candidates, textValue:gsub("%s+", " "))
+                if #candidates >= 3 then break end
+            end
+        end
+    end
+    if #candidates == 0 then
+        return "Main UI exists, but no visible quest-like TextLabel was detected. This does not establish quest completion."
+    end
+    return table.concat(candidates, " | ")
+end
+
+local function getToolInventorySummary()
+    local containers = {}
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local character = LocalPlayer.Character
+    if backpack then table.insert(containers, backpack) end
+    if character then table.insert(containers, character) end
+    local tools, chipCount = {}, 0
+    for _, container in ipairs(containers) do
+        for _, item in ipairs(container:GetChildren()) do
+            if item:IsA("Tool") then
+                table.insert(tools, item.Name)
+                local lower = string.lower(item.Name)
+                if lower:find("microchip", 1, true) or lower:find("micro chip", 1, true) then chipCount += 1 end
+            end
+        end
+    end
+    table.sort(tools)
+    local shown = {}
+    for i = 1, math.min(#tools, 8) do shown[i] = tools[i] end
+    local toolText = #shown > 0 and table.concat(shown, ", ") or "No Tool instances found"
+    if #tools > #shown then toolText ..= (" +%d more"):format(#tools - #shown) end
+    return ("Tools: %d • Raid microchip-like tools: %d • %s"):format(#tools, chipCount, toolText)
+end
+
 --// Tabs
 pages.Home = function()
     addCard("Welcome back", "Meizu Hub is a read-only companion UI. It does not automate combat, farming, or server remotes.")
     local playerCard, playerText = addStatusCard("Player status", "Reading current character…")
     local serverCard, serverText = addStatusCard("Session", "Reading current session…")
     local worldCard, worldText = addStatusCard("World observations", "Scanning visible workspace objects…")
+    local clockCard, clockText = addStatusCard("Game / local time", "Reading clocks…")
     local function refreshHomeStatus()
         local stats = getCharacterStats()
         playerText.Text = ("%s  •  HP %s  •  WalkSpeed %s  •  JumpPower %s"):format(stats.status, stats.health, stats.speed, stats.jump)
@@ -1005,6 +1091,7 @@ pages.Home = function()
             if value:sub(1, 6) == "Found:" then found += 1 end
         end
         worldText.Text = ("%d of %d tracked names currently visible. This is a client-side observation, not authoritative event data."):format(found, #observedWorldNames)
+        clockText.Text = getGameClockText() .. " • Client: " .. getClientClockText()
     end
     state.pageRefreshers.Home = refreshHomeStatus
     addButton("Refresh status now", function()
@@ -1016,10 +1103,17 @@ pages.Home = function()
 end
 
 pages.Farming = function()
-    addCard("Farming utilities", "The source script contains extensive auto-farm, bring-mob, mastery and chest automation. Those exploit-style actions are intentionally not reproduced.")
-    addCard("Safe alternative: character monitor", "Use Home to read the actual health, walk speed and jump power of your current character. Values update after respawn.")
+    addCard("Farming utilities", "The source script contains extensive auto-farm, bring-mob, mastery and chest automation. Automated gameplay actions are intentionally not reproduced.")
+    local enemyCard, enemyText = addStatusCard("Visible enemy monitor", getVisibleEnemySummary())
+    local function refreshEnemySummary() enemyText.Text = getVisibleEnemySummary() end
+    state.pageRefreshers.Farming = refreshEnemySummary
+    addButton("Refresh visible enemy count", function()
+        refreshEnemySummary()
+        showToast("Enemy monitor refreshed", "Read-only Workspace scan completed.")
+    end)
+    addCard("Safe alternative: character monitor", "Use Home or Player to read actual health, walk speed and jump power. The monitor does not target, highlight, move toward or attack anything.")
     addButton("Open Home status", function() showTab("Home") end)
-    addCard("Not implemented", "Auto Farm Level, Auto Farm Nearest, chest farming, berry farming, mob pulling, auto mastery, kill aura and fast attack require unauthorized automation or game-specific remote behavior.")
+    addCard("Not integrated from source", "Auto Farm Level/Nearest, chest and berry farming, mob pulling, mastery automation, kill aura and fast attack are excluded because they automate combat/progression in a third-party experience.")
 end
 
 pages.Bosses = function()
@@ -1035,18 +1129,24 @@ pages.Bosses = function()
 end
 
 pages.Quests = function()
-    addCard("Quest status", "Quest completion and progression are controlled by the game server. This LocalScript does not invoke quest remotes or auto-complete quests.")
-    local character = LocalPlayer.Character
-    local questUI = PlayerGui:FindFirstChild("Main")
-    addCard("Client UI", questUI and "A PlayerGui child named Main is present; its contents are not assumed." or "No PlayerGui child named Main was found.")
-    addButton("Refresh quest observation", function()
-        local found = PlayerGui:FindFirstChild("Main")
-        showToast("Quest observation", found and "Main UI container exists; inspect it in Studio to map your own game's quest UI." or "Quest UI container not found.")
+    addCard("Quest status", "Quest completion/progression are server-authoritative. This page reads only visible quest-like text from the local PlayerGui and never submits quest remotes.")
+    local questCard, questText = addStatusCard("Visible quest text", getQuestUiSummary())
+    local function refreshQuestText() questText.Text = getQuestUiSummary() end
+    addButton("Refresh quest UI observation", function()
+        refreshQuestText()
+        showToast("Quest observation refreshed", "Visible client UI text was scanned; server progress was not queried.")
     end)
+    addCard("Compatibility", "The source's Tushita/Yama, Skull Guitar, Cursed Dual Katana, race, Bartilo/Citizen and other quest automation depends on private game state and server calls; it is not enabled here.")
 end
 
 pages.Raids = function()
     addCard("Raid observer", "Raid start, chip purchase, dungeon completion, awakening, Law raid and exit teleport actions from the source rely on game-specific server remotes and are not run here.")
+    local inventoryCard, inventoryText = addStatusCard("Local tool inventory", getToolInventorySummary())
+    local function refreshInventory() inventoryText.Text = getToolInventorySummary() end
+    addButton("Refresh tool inventory", function()
+        refreshInventory()
+        showToast("Inventory refreshed", "Only Tool instances in Backpack/Character were inspected.")
+    end)
     local raidNames = {"Raid", "RaidIsland", "Dungeon", "Microchip", "Awakening"}
     for _, name in ipairs(raidNames) do
         local object = findObservedInstance(name)
@@ -1100,6 +1200,10 @@ pages.Settings = function()
         state.reduceMotion = value
         showToast("Reduce motion", value and "Animations reduced." or "Animations enabled.")
     end, "Reduces UI tween animations; useful on lower-powered phones.")
+    addToggle("Live status refresh", state.liveRefresh, function(value)
+        state.liveRefresh = value
+        showToast("Live status refresh", value and "Periodic Home/Player/Farming refresh enabled." or "Periodic refresh paused; use Refresh buttons manually.")
+    end, "Controls periodic read-only status updates. Manual refresh buttons remain available.")
     addSlider("Glass transparency (%)", 8, 30, math.floor(state.glassOpacity * 100 + 0.5), function(value)
         state.glassOpacity = value / 100
         root.BackgroundTransparency = state.glassOpacity
@@ -1109,6 +1213,7 @@ pages.Settings = function()
         state.scale = CONFIG.DefaultScale
         state.glassOpacity = 0.16
         state.reduceMotion = false
+        state.liveRefresh = true
         root.Size = UDim2.fromScale(0.76, 0.69)
         root.BackgroundTransparency = state.glassOpacity
         applyTheme()
@@ -1220,7 +1325,7 @@ task.spawn(function()
     while not state.destroyed and screenGui.Parent do
         task.wait(CONFIG.RefreshInterval)
         if state.destroyed then break end
-        if state.currentTab == "Home" or state.currentTab == "Player" then
+        if state.liveRefresh and (state.currentTab == "Home" or state.currentTab == "Player" or state.currentTab == "Farming") then
             safeCall("periodic status refresh", function()
                 local stats = getCharacterStats()
                 state.lastSnapshot = {
