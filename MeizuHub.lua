@@ -27,6 +27,15 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
+-- Clean up a previous run and its global input connections.
+local oldCleanupSignal = PlayerGui:FindFirstChild("MeizuHubCleanupSignal")
+if oldCleanupSignal and oldCleanupSignal:IsA("BindableEvent") then
+    oldCleanupSignal:Fire()
+    oldCleanupSignal:Destroy()
+end
+local oldGui = PlayerGui:FindFirstChild("MeizuHubGui")
+if oldGui then oldGui:Destroy() end
+
 --// Configuration
 local CONFIG = {
     Name = "Meizu Hub",
@@ -60,6 +69,8 @@ local CONFIG = {
 local state = {
     destroyed = false,
     minimized = false,
+    menuVisible = true,
+    floatingMoved = false,
     currentTab = "Home",
     theme = CONFIG.DefaultTheme,
     scale = CONFIG.DefaultScale,
@@ -149,15 +160,26 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "MeizuHubGui"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = false
-screenGui.DisplayOrder = 50
+screenGui.DisplayOrder = 1000
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = PlayerGui
+
+local cleanupSignal = Instance.new("BindableEvent")
+cleanupSignal.Name = "MeizuHubCleanupSignal"
+cleanupSignal.Parent = PlayerGui
+trackConnection(cleanupSignal.Event:Connect(function()
+    if state.destroyed then return end
+    state.destroyed = true
+    disconnectBucket(state.connections)
+    disconnectBucket(state.characterConnections)
+    if screenGui.Parent then screenGui:Destroy() end
+end))
 
 local root = Instance.new("Frame")
 root.Name = "Window"
 root.AnchorPoint = Vector2.new(0.5, 0.5)
 root.Position = UDim2.fromScale(0.5, 0.5)
-root.Size = UDim2.fromScale(0.86, 0.78)
+root.Size = UDim2.fromScale(0.76, 0.69)
 root.BackgroundColor3 = Color3.fromRGB(16, 18, 28)
 root.BackgroundTransparency = state.glassOpacity
 root.BorderSizePixel = 0
@@ -229,6 +251,20 @@ subtitle.TextSize = 9
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.Parent = topBar
 
+local reopenButton
+
+local function setMenuVisible(visible, notify)
+    if state.destroyed then return end
+    state.menuVisible = visible == true
+    state.minimized = not state.menuVisible
+    root.Visible = state.menuVisible
+    reopenButton.Visible = true
+    if notify then
+        showToast(state.menuVisible and "Menu opened" or "Menu hidden",
+            state.menuVisible and "Meizu Hub is ready." or "Tap the floating M icon to reopen.")
+    end
+end
+
 local function makeTopButton(name, text, xOffset, width)
     local button = Instance.new("TextButton")
     button.Name = name
@@ -239,24 +275,20 @@ local function makeTopButton(name, text, xOffset, width)
     button.BackgroundTransparency = 0.91
     button.BorderSizePixel = 0
     button.AutoButtonColor = false
+    button.Active = true
+    button.Selectable = true
     button.Font = Enum.Font.GothamBold
     button.Text = text
     button.TextColor3 = Color3.fromRGB(238, 240, 250)
     button.TextSize = 15
+    button.ZIndex = 5
     button.Parent = topBar
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(0, 10)
     corner.Parent = button
     trackConnection(button.Activated:Connect(function()
-        if name == "Minimize" then
-            state.minimized = true
-            root.Visible = false
-            reopenButton.Visible = true
-        elseif name == "Close" then
-            state.destroyed = true
-            disconnectBucket(state.connections)
-            disconnectBucket(state.characterConnections)
-            screenGui:Destroy()
+        if name == "Minimize" or name == "Close" then
+            setMenuVisible(false, false)
         end
     end))
     return button
@@ -265,35 +297,93 @@ end
 local minimizeButton = makeTopButton("Minimize", "—", -52, 34)
 local closeButton = makeTopButton("Close", "×", -12, 34)
 
-local reopenButton = Instance.new("TextButton")
-reopenButton.Name = "MeizuHubReopen"
+reopenButton = Instance.new("TextButton")
+reopenButton.Name = "MeizuHubFloatingToggle"
 reopenButton.AnchorPoint = Vector2.new(1, 1)
 reopenButton.Position = UDim2.new(1, -18, 1, -28)
-reopenButton.Size = UDim2.fromOffset(58, 58)
+reopenButton.Size = UDim2.fromOffset(48, 48)
 reopenButton.BackgroundColor3 = Color3.fromRGB(24, 27, 42)
-reopenButton.BackgroundTransparency = 0.08
+reopenButton.BackgroundTransparency = 0.10
 reopenButton.BorderSizePixel = 0
 reopenButton.Text = "M"
 reopenButton.Font = Enum.Font.GothamBlack
-reopenButton.TextSize = 23
+reopenButton.TextSize = 21
 reopenButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-reopenButton.Visible = false
+reopenButton.Visible = true
+reopenButton.Active = true
+reopenButton.Selectable = true
+reopenButton.AutoButtonColor = false
+reopenButton.ZIndex = 100
 reopenButton.Parent = screenGui
 local reopenCorner = Instance.new("UICorner")
 reopenCorner.CornerRadius = UDim.new(1, 0)
 reopenCorner.Parent = reopenButton
 local reopenStroke = Instance.new("UIStroke")
 reopenStroke.Thickness = 1.5
+reopenStroke.Transparency = 0.15
 reopenStroke.Color = getTheme().Accent
 reopenStroke.Parent = reopenButton
 addThemeObject(reopenStroke, "Color", "Accent")
-trackConnection(reopenButton.Activated:Connect(function()
-    if not state.destroyed then
-        state.minimized = false
-        root.Visible = true
-        reopenButton.Visible = false
+local reopenGradient = Instance.new("UIGradient")
+reopenGradient.Rotation = 35
+reopenGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(42, 47, 72)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 23, 37)),
+})
+reopenGradient.Parent = reopenButton
+
+-- Tap toggles the existing window; drag only repositions the icon.
+do
+    local pressInput, pressPosition, initialButtonPosition
+    local dragging = false
+    local dragThreshold = 8
+
+    local function clampFloatingPosition(x, y)
+        local camera = Workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+        local insetTopLeft = GuiService:GetGuiInset()
+        local width, height = reopenButton.AbsoluteSize.X, reopenButton.AbsoluteSize.Y
+        local minX, maxX = 6, math.max(6, viewport.X - width - 6)
+        local minY = insetTopLeft.Y + 6
+        local maxY = math.max(minY, viewport.Y - height - 6)
+        return Vector2.new(math.clamp(x, minX, maxX), math.clamp(y, minY, maxY))
     end
-end))
+
+    trackConnection(reopenButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            pressInput, pressPosition = input, input.Position
+            initialButtonPosition = reopenButton.AbsolutePosition
+            dragging = false
+        end
+    end))
+
+    trackConnection(UserInputService.InputChanged:Connect(function(input)
+        if not pressInput or not pressPosition or not initialButtonPosition then return end
+        local sameTouch = input == pressInput
+        local mouseMove = pressInput.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseMovement
+        if sameTouch or mouseMove then
+            local delta = input.Position - pressPosition
+            if not dragging and delta.Magnitude >= dragThreshold then dragging = true end
+            if dragging then
+                state.floatingMoved = true
+                local pos = clampFloatingPosition(initialButtonPosition.X + delta.X, initialButtonPosition.Y + delta.Y)
+                reopenButton.AnchorPoint = Vector2.new(0, 0)
+                reopenButton.Position = UDim2.fromOffset(pos.X, pos.Y)
+            end
+        end
+    end))
+
+    trackConnection(UserInputService.InputEnded:Connect(function(input)
+        local ended = pressInput and (input == pressInput or
+            (pressInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1))
+        if ended then
+            local wasDragging = dragging
+            pressInput, pressPosition, initialButtonPosition, dragging = nil, nil, nil, false
+            if not wasDragging then setMenuVisible(not state.menuVisible, true) end
+        end
+    end))
+end
 
 -- Drag support: mouse and touch use the same InputObject flow.
 do
@@ -1004,7 +1094,7 @@ pages.Settings = function()
     end)
     addSlider("Window scale (%)", 82, 112, math.floor(state.scale * 100 + 0.5), function(value)
         state.scale = value / 100
-        root.Size = UDim2.new(0.86 * state.scale, 0, 0.78 * state.scale, 0)
+        root.Size = UDim2.new(0.76 * state.scale, 0, 0.69 * state.scale, 0)
     end)
     addToggle("Reduce motion", state.reduceMotion, function(value)
         state.reduceMotion = value
@@ -1019,7 +1109,7 @@ pages.Settings = function()
         state.scale = CONFIG.DefaultScale
         state.glassOpacity = 0.16
         state.reduceMotion = false
-        root.Size = UDim2.fromScale(0.86, 0.78)
+        root.Size = UDim2.fromScale(0.76, 0.69)
         root.BackgroundTransparency = state.glassOpacity
         applyTheme()
         showToast("Appearance reset", "Default session appearance restored.")
@@ -1044,7 +1134,7 @@ local function updateResponsiveLayout()
     local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
     local isNarrow = viewport.X < 560
     if isNarrow then
-        root.Size = UDim2.new(0.96, 0, 0.82, 0)
+        root.Size = UDim2.new(0.86, 0, 0.72, 0)
         sidebar.Size = UDim2.new(0, 88, 1, -20)
         content.Position = UDim2.new(0, 103, 0, 10)
         content.Size = UDim2.new(1, -113, 1, -20)
@@ -1052,7 +1142,7 @@ local function updateResponsiveLayout()
             button.TextSize = 9
         end
     else
-        root.Size = UDim2.new(0.86 * state.scale, 0, 0.78 * state.scale, 0)
+        root.Size = UDim2.new(0.76 * state.scale, 0, 0.69 * state.scale, 0)
         sidebar.Size = UDim2.new(0, 112, 1, -20)
         content.Position = UDim2.new(0, 132, 0, 10)
         content.Size = UDim2.new(1, -142, 1, -20)
@@ -1060,23 +1150,40 @@ local function updateResponsiveLayout()
             button.TextSize = 10
         end
     end
-    -- Keep the window inside the current viewport with a small safe margin.
     local insetTopLeft, insetBottomRight = GuiService:GetGuiInset()
+    local safeWidth = math.max(240, viewport.X - 16)
+    local safeHeight = math.max(280, viewport.Y - insetTopLeft.Y - insetBottomRight.Y - 16)
+    rootSizeConstraint.MinSize = Vector2.new(math.min(300, safeWidth), math.min(360, safeHeight))
+    rootSizeConstraint.MaxSize = Vector2.new(math.min(760, safeWidth), math.min(720, safeHeight))
     local absSize = root.AbsoluteSize
-    local safeWidth = math.max(300, viewport.X - 16)
-    local safeHeight = math.max(360, viewport.Y - insetTopLeft.Y - insetBottomRight.Y - 16)
-    if absSize.X > safeWidth then
-        root.Size = UDim2.new(0, safeWidth, root.Size.Y.Scale, root.Size.Y.Offset)
+    if absSize.X > safeWidth then root.Size = UDim2.new(0, safeWidth, root.Size.Y.Scale, root.Size.Y.Offset) end
+    if absSize.Y > safeHeight then root.Size = UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, safeHeight) end
+
+    local iconPos, iconSize = reopenButton.AbsolutePosition, reopenButton.AbsoluteSize
+    local x, y
+    if not state.floatingMoved then
+        x = math.max(6, viewport.X - iconSize.X - 18)
+        y = math.max(insetTopLeft.Y + 6, viewport.Y - iconSize.Y - 28)
+    else
+        x = math.clamp(iconPos.X, 6, math.max(6, viewport.X - iconSize.X - 6))
+        y = math.clamp(iconPos.Y, insetTopLeft.Y + 6, math.max(insetTopLeft.Y + 6, viewport.Y - iconSize.Y - 6))
     end
-    if absSize.Y > safeHeight then
-        root.Size = UDim2.new(root.Size.X.Scale, root.Size.X.Offset, 0, safeHeight)
-    end
+    reopenButton.AnchorPoint = Vector2.new(0, 0)
+    reopenButton.Position = UDim2.fromOffset(x, y)
 end
 
-trackConnection(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(updateResponsiveLayout))
-if Workspace.CurrentCamera then
-    trackConnection(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsiveLayout))
+local cameraViewportConnection
+local function bindCurrentCamera()
+    if cameraViewportConnection then cameraViewportConnection:Disconnect(); cameraViewportConnection = nil end
+    local camera = Workspace.CurrentCamera
+    if camera then
+        cameraViewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsiveLayout)
+        trackConnection(cameraViewportConnection)
+    end
+    updateResponsiveLayout()
 end
+trackConnection(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindCurrentCamera))
+bindCurrentCamera()
 
 trackConnection(Players.PlayerAdded:Connect(function()
     state.lastSnapshot.PlayerCount = #Players:GetPlayers()
@@ -1131,6 +1238,10 @@ task.spawn(function()
 end)
 
 -- Initial layout and page.
+state.menuVisible = true
+state.minimized = false
+root.Visible = true
+reopenButton.Visible = true
 updateResponsiveLayout()
 showTab("Home")
-showToast("Meizu Hub ready", "Read-only status companion initialized.")
+showToast("Meizu Hub ready", "Tap the floating M icon to hide or reopen the menu.")
