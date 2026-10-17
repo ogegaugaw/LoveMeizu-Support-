@@ -22,6 +22,7 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local GuiService = game:GetService("GuiService")
 local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
@@ -76,7 +77,16 @@ local state = {
     scale = CONFIG.DefaultScale,
     reduceMotion = false,
     liveRefresh = true,
+    monitorEnabled = {Home=true, Farming=true, Bosses=true, Quests=true, Raids=true, ["Sea Events"]=true, Player=true},
     glassOpacity = 0.16,
+    -- Local-only visual/UI overrides. Each override records the value to restore.
+    fullBrightEnabled = false,
+    timeOverrideEnabled = false,
+    selectedTime = "Day",
+    hiddenCoreGui = {Chat = false, PlayerList = false},
+    originalFullBright = nil,
+    originalClockTime = nil,
+    originalCoreGui = {},
     connections = {},
     pageButtons = {},
     pageFrames = {},
@@ -88,6 +98,7 @@ local state = {
 }
 
 local showToast
+local restoreLocalOverrides
 
 local function trackConnection(connection, bucket)
     bucket = bucket or state.connections
@@ -171,6 +182,7 @@ cleanupSignal.Parent = PlayerGui
 trackConnection(cleanupSignal.Event:Connect(function()
     if state.destroyed then return end
     state.destroyed = true
+    if restoreLocalOverrides then pcall(restoreLocalOverrides) end
     disconnectBucket(state.connections)
     disconnectBucket(state.characterConnections)
     if screenGui.Parent then screenGui:Destroy() end
@@ -1005,6 +1017,102 @@ local function getClientClockText()
     return ok and tostring(value) or "Local clock unavailable"
 end
 
+--// Real local-only utility features (no game remotes or executor APIs)
+local function setFullBright(enabled)
+    if enabled then
+        if not state.originalFullBright then
+            state.originalFullBright = {
+                Brightness = Lighting.Brightness,
+                Ambient = Lighting.Ambient,
+                OutdoorAmbient = Lighting.OutdoorAmbient,
+                FogEnd = Lighting.FogEnd,
+                GlobalShadows = Lighting.GlobalShadows,
+            }
+        end
+        state.fullBrightEnabled = true
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
+    else
+        state.fullBrightEnabled = false
+        local original = state.originalFullBright
+        if original then
+            Lighting.Brightness = original.Brightness
+            Lighting.Ambient = original.Ambient
+            Lighting.OutdoorAmbient = original.OutdoorAmbient
+            Lighting.FogEnd = original.FogEnd
+            Lighting.GlobalShadows = original.GlobalShadows
+            state.originalFullBright = nil
+        end
+    end
+end
+
+local function setTimeOverride(enabled)
+    if enabled then
+        if not state.timeOverrideEnabled then
+            state.originalClockTime = Lighting.ClockTime
+        end
+        state.timeOverrideEnabled = true
+        Lighting.ClockTime = state.selectedTime == "Night" and 0 or 12
+    else
+        state.timeOverrideEnabled = false
+        if state.originalClockTime ~= nil then
+            Lighting.ClockTime = state.originalClockTime
+            state.originalClockTime = nil
+        end
+    end
+end
+
+local function setCoreGuiHidden(coreGuiType, hidden, stateKey)
+    if hidden then
+        if state.originalCoreGui[stateKey] == nil then
+            local ok, wasEnabled = pcall(function()
+                return StarterGui:GetCoreGuiEnabled(coreGuiType)
+            end)
+            if ok then
+                state.originalCoreGui[stateKey] = wasEnabled
+            else
+                -- If Roblox does not expose the current state, use the normal visible default.
+                state.originalCoreGui[stateKey] = true
+            end
+        end
+        StarterGui:SetCoreGuiEnabled(coreGuiType, false)
+        state.hiddenCoreGui[stateKey] = true
+    else
+        local original = state.originalCoreGui[stateKey]
+        StarterGui:SetCoreGuiEnabled(coreGuiType, original == nil and true or original)
+        state.originalCoreGui[stateKey] = nil
+        state.hiddenCoreGui[stateKey] = false
+    end
+end
+
+restoreLocalOverrides = function()
+    if state.fullBrightEnabled then setFullBright(false) end
+    if state.timeOverrideEnabled then setTimeOverride(false) end
+    for key, hidden in pairs(state.hiddenCoreGui) do
+        if hidden then
+            local coreGuiType = key == "Chat" and Enum.CoreGuiType.Chat or Enum.CoreGuiType.PlayerList
+            pcall(function() setCoreGuiHidden(coreGuiType, false, key) end)
+        end
+    end
+end
+
+local function reapplyLocalOverrides()
+    if state.fullBrightEnabled then
+        -- Keep the override active if the game updates Lighting while enabled.
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
+    end
+    if state.timeOverrideEnabled then
+        Lighting.ClockTime = state.selectedTime == "Night" and 0 or 12
+    end
+end
+
 local function getVisibleEnemySummary()
     local enemies = Workspace:FindFirstChild("Enemies")
     if not enemies then return "Workspace.Enemies not found; target hierarchy is unknown." end
@@ -1094,6 +1202,11 @@ pages.Home = function()
         clockText.Text = getGameClockText() .. " • Client: " .. getClientClockText()
     end
     state.pageRefreshers.Home = refreshHomeStatus
+    addToggle("Live home status monitor", state.monitorEnabled.Home, function(value)
+        state.monitorEnabled.Home = value
+        if value then refreshHomeStatus() end
+        showToast("Home status monitor", value and "Enabled: Home observations update automatically." or "Disabled: automatic Home updates stopped.")
+    end, "Controls periodic character/session/world-clock observations on Home.")
     addButton("Refresh status now", function()
         refreshHomeStatus()
         showToast("Status refreshed", "Values were read from the current client.")
@@ -1103,10 +1216,15 @@ pages.Home = function()
 end
 
 pages.Farming = function()
-    addCard("Farming utilities", "The source script contains extensive auto-farm, bring-mob, mastery and chest automation. Automated gameplay actions are intentionally not reproduced.")
-    local enemyCard, enemyText = addStatusCard("Visible enemy monitor", getVisibleEnemySummary())
+    addCard("Farming utilities", "This tab offers a live, read-only enemy monitor. It does not start auto-farm, attack, pull mobs, or manipulate progression.")
+    local _, enemyText = addStatusCard("Visible enemy monitor", getVisibleEnemySummary())
     local function refreshEnemySummary() enemyText.Text = getVisibleEnemySummary() end
     state.pageRefreshers.Farming = refreshEnemySummary
+    addToggle("Live enemy monitor", state.monitorEnabled.Farming, function(value)
+        state.monitorEnabled.Farming = value
+        if value then refreshEnemySummary() end
+        showToast("Enemy monitor", value and "Enabled: read-only scan updates while this tab is open." or "Disabled: automatic enemy scans stopped.")
+    end, "Only reads visible Workspace.Enemies; it does not target or attack NPCs.")
     addButton("Refresh visible enemy count", function()
         refreshEnemySummary()
         showToast("Enemy monitor refreshed", "Read-only Workspace scan completed.")
@@ -1117,50 +1235,83 @@ pages.Farming = function()
 end
 
 pages.Bosses = function()
-    addCard("Boss observer", "Read-only scan of visible Workspace instances with common boss names. The client may not have all NPCs streamed in.")
-    for _, name in ipairs({"Cake Prince", "Dough King", "Rip Indra", "Soul Reaper", "Tyrant of the Skies", "Terrorshark", "Leviathan"}) do
-        local object = findObservedInstance(name)
-        addCard(name, object and ("Visible: " .. object:GetFullName()) or "Not visible to this client")
+    addCard("Boss observer", "Toggle the read-only scan of common boss names visible to this client. Not visible does not prove a boss is absent from the server.")
+    local names = {"Cake Prince", "Dough King", "Rip Indra", "Soul Reaper", "Tyrant of the Skies", "Terrorshark", "Leviathan"}
+    local labels = {}
+    for _, name in ipairs(names) do local _, textLabel = addStatusCard(name, "Scanning…"); labels[name] = textLabel end
+    local function refreshBosses()
+        for _, name in ipairs(names) do
+            local object = findObservedInstance(name)
+            labels[name].Text = object and ("Visible: " .. object:GetFullName()) or "Not visible to this client"
+        end
     end
-    addButton("Rescan visible bosses", function()
-        showTab("Bosses")
-        showToast("Boss scan complete", "Only locally visible instances were checked.")
-    end)
+    state.pageRefreshers.Bosses = refreshBosses
+    addToggle("Live boss monitor", state.monitorEnabled.Bosses, function(value)
+        state.monitorEnabled.Bosses = value
+        if value then refreshBosses() end
+        showToast("Boss monitor", value and "Enabled: visible boss scan updates while this tab is open." or "Disabled: automatic boss scans stopped.")
+    end, "Read-only; does not teleport to, target, or attack bosses.")
+    addButton("Rescan visible bosses", function() refreshBosses(); showToast("Boss scan complete", "Only locally visible instances were checked.") end)
+    refreshBosses()
 end
 
 pages.Quests = function()
-    addCard("Quest status", "Quest completion/progression are server-authoritative. This page reads only visible quest-like text from the local PlayerGui and never submits quest remotes.")
-    local questCard, questText = addStatusCard("Visible quest text", getQuestUiSummary())
+    addCard("Quest status", "Quest completion/progression are server-authoritative. This page only reads visible quest-like text from the local PlayerGui.")
+    local _, questText = addStatusCard("Visible quest text", getQuestUiSummary())
     local function refreshQuestText() questText.Text = getQuestUiSummary() end
-    addButton("Refresh quest UI observation", function()
-        refreshQuestText()
-        showToast("Quest observation refreshed", "Visible client UI text was scanned; server progress was not queried.")
-    end)
+    state.pageRefreshers.Quests = refreshQuestText
+    addToggle("Live quest UI observer", state.monitorEnabled.Quests, function(value)
+        state.monitorEnabled.Quests = value
+        if value then refreshQuestText() end
+        showToast("Quest UI observer", value and "Enabled: visible quest text refreshes on this tab." or "Disabled: automatic quest UI scans stopped.")
+    end, "Reads visible text only; it cannot verify server progress or complete quests.")
+    addButton("Refresh quest UI observation", function() refreshQuestText(); showToast("Quest observation refreshed", "Visible client UI text was scanned; server progress was not queried.") end)
     addCard("Compatibility", "The source's Tushita/Yama, Skull Guitar, Cursed Dual Katana, race, Bartilo/Citizen and other quest automation depends on private game state and server calls; it is not enabled here.")
+    refreshQuestText()
 end
 
 pages.Raids = function()
-    addCard("Raid observer", "Raid start, chip purchase, dungeon completion, awakening, Law raid and exit teleport actions from the source rely on game-specific server remotes and are not run here.")
-    local inventoryCard, inventoryText = addStatusCard("Local tool inventory", getToolInventorySummary())
-    local function refreshInventory() inventoryText.Text = getToolInventorySummary() end
-    addButton("Refresh tool inventory", function()
-        refreshInventory()
-        showToast("Inventory refreshed", "Only Tool instances in Backpack/Character were inspected.")
-    end)
+    addCard("Raid observer", "Toggle a read-only inventory/instance monitor. Raid start, chip purchase, dungeon completion and awakening remotes are not invoked.")
+    local _, inventoryText = addStatusCard("Local tool inventory", getToolInventorySummary())
     local raidNames = {"Raid", "RaidIsland", "Dungeon", "Microchip", "Awakening"}
-    for _, name in ipairs(raidNames) do
-        local object = findObservedInstance(name)
-        addCard(name, object and ("Visible instance: " .. object:GetFullName()) or "No matching visible instance")
+    local raidLabels = {}
+    for _, name in ipairs(raidNames) do local _, textLabel = addStatusCard(name, "Scanning…"); raidLabels[name] = textLabel end
+    local function refreshRaidObserver()
+        inventoryText.Text = getToolInventorySummary()
+        for _, name in ipairs(raidNames) do
+            local object = findObservedInstance(name)
+            raidLabels[name].Text = object and ("Visible instance: " .. object:GetFullName()) or "No matching visible instance"
+        end
     end
+    state.pageRefreshers.Raids = refreshRaidObserver
+    addToggle("Live raid inventory observer", state.monitorEnabled.Raids, function(value)
+        state.monitorEnabled.Raids = value
+        if value then refreshRaidObserver() end
+        showToast("Raid observer", value and "Enabled: local inventory and visible names refresh on this tab." or "Disabled: automatic raid observations stopped.")
+    end, "Does not buy chips, start raids, awaken fruits, or call game remotes.")
+    addButton("Refresh tool inventory", function() refreshRaidObserver(); showToast("Raid observation refreshed", "Only local Tool instances and visible names were inspected.") end)
+    refreshRaidObserver()
 end
 
 pages["Sea Events"] = function()
-    addCard("Sea event observer", "This page only checks whether common sea-event names are visible in the local Workspace.")
-    for _, name in ipairs({"Terrorshark", "Sea Beast", "Leviathan", "Fish Boat", "Pirate Grand Brigade", "KitsuneIsland", "Frozen Dimension"}) do
-        local object = findObservedInstance(name)
-        addCard(name, object and ("Visible: " .. object:GetFullName()) or "Not visible to this client")
+    addCard("Sea event observer", "Toggle periodic checks for common sea-event names visible in the local Workspace.")
+    local names = {"Terrorshark", "Sea Beast", "Leviathan", "Fish Boat", "Pirate Grand Brigade", "KitsuneIsland", "Frozen Dimension"}
+    local labels = {}
+    for _, name in ipairs(names) do local _, textLabel = addStatusCard(name, "Scanning…"); labels[name] = textLabel end
+    local function refreshSeaEvents()
+        for _, name in ipairs(names) do
+            local object = findObservedInstance(name)
+            labels[name].Text = object and ("Visible: " .. object:GetFullName()) or "Not visible to this client"
+        end
     end
+    state.pageRefreshers["Sea Events"] = refreshSeaEvents
+    addToggle("Live sea-event monitor", state.monitorEnabled["Sea Events"], function(value)
+        state.monitorEnabled["Sea Events"] = value
+        if value then refreshSeaEvents() end
+        showToast("Sea-event monitor", value and "Enabled: visible event scan updates while this tab is open." or "Disabled: automatic sea-event scans stopped.")
+    end, "Read-only observation; no sailing, ship manipulation, or event combat.")
     addCard("Not implemented", "Auto-sail, ship noclip, boat speed manipulation, sea-event combat and Azure Ember automation are not included.")
+    refreshSeaEvents()
 end
 
 pages.Player = function()
@@ -1175,6 +1326,11 @@ pages.Player = function()
         movementText.Text = ("WalkSpeed %s  •  JumpPower %s"):format(stats.speed, stats.jump)
     end
     state.pageRefreshers.Player = refreshCharacter
+    addToggle("Live character monitor", state.monitorEnabled.Player, function(value)
+        state.monitorEnabled.Player = value
+        if value then refreshCharacter() end
+        showToast("Character monitor", value and "Enabled: health and movement values update while this tab is open." or "Disabled: automatic character reads stopped.")
+    end, "Read-only health, WalkSpeed and JumpPower; this does not modify movement.")
     refreshCharacter()
     addButton("Refresh character values", refreshCharacter)
     addCard("Not included", "No-clip, fly, infinite energy/range, dash cooldown changes, aimbot, player targeting, PvP automation, or forced movement.")
@@ -1203,7 +1359,30 @@ pages.Settings = function()
     addToggle("Live status refresh", state.liveRefresh, function(value)
         state.liveRefresh = value
         showToast("Live status refresh", value and "Periodic Home/Player/Farming refresh enabled." or "Periodic refresh paused; use Refresh buttons manually.")
-    end, "Controls periodic read-only status updates. Manual refresh buttons remain available.")
+    end, "Master switch for periodic read-only updates across all monitor tabs. Manual refresh buttons remain available.")
+    addToggle("Full Bright (local Lighting)", state.fullBrightEnabled, function(value)
+        setFullBright(value)
+        showToast("Full Bright", value and "Local Lighting override enabled." or "Original Lighting values restored.")
+    end, "Changes only local Lighting properties. Original values are restored when switched off or the UI is cleaned up.")
+    addDropdown("Time override", {"Day", "Night"}, state.selectedTime, function(value)
+        state.selectedTime = value
+        if state.timeOverrideEnabled then
+            Lighting.ClockTime = value == "Night" and 0 or 12
+        end
+        showToast("Time selection", value .. (state.timeOverrideEnabled and " applied locally." or " selected; enable Time override to apply."))
+    end)
+    addToggle("Enable Day / Night override", state.timeOverrideEnabled, function(value)
+        setTimeOverride(value)
+        showToast("Time override", value and (state.selectedTime .. " applied locally.") or "Original ClockTime restored.")
+    end, "Uses a separate Day/Night setting (fixes the original source's shared-variable conflict).")
+    addToggle("Hide Chat UI", state.hiddenCoreGui.Chat, function(value)
+        setCoreGuiHidden(Enum.CoreGuiType.Chat, value, "Chat")
+        showToast("Chat UI", value and "Chat hidden locally." or "Chat visibility restored.")
+    end, "Hides only the local Roblox Chat CoreGui; it does not affect other players.")
+    addToggle("Hide Player List UI", state.hiddenCoreGui.PlayerList, function(value)
+        setCoreGuiHidden(Enum.CoreGuiType.PlayerList, value, "PlayerList")
+        showToast("Player List UI", value and "Player list hidden locally." or "Player list visibility restored.")
+    end, "Hides only the local Roblox PlayerList CoreGui; it does not affect server player data.")
     addSlider("Glass transparency (%)", 8, 30, math.floor(state.glassOpacity * 100 + 0.5), function(value)
         state.glassOpacity = value / 100
         root.BackgroundTransparency = state.glassOpacity
@@ -1214,6 +1393,7 @@ pages.Settings = function()
         state.glassOpacity = 0.16
         state.reduceMotion = false
         state.liveRefresh = true
+        for tabName in pairs(state.monitorEnabled) do state.monitorEnabled[tabName] = true end
         root.Size = UDim2.fromScale(0.76, 0.69)
         root.BackgroundTransparency = state.glassOpacity
         applyTheme()
@@ -1320,22 +1500,28 @@ if LocalPlayer.Character then
     bindCharacter(LocalPlayer.Character)
 end
 
+-- Reapply local visual overrides at a low rate in case the experience updates Lighting.
+task.spawn(function()
+    while not state.destroyed and screenGui.Parent do
+        task.wait(1)
+        if state.destroyed then break end
+        safeCall("local visual override refresh", reapplyLocalOverrides)
+    end
+end)
+
 -- Refresh Home and Player observations at a controlled rate, not every render frame.
 task.spawn(function()
     while not state.destroyed and screenGui.Parent do
         task.wait(CONFIG.RefreshInterval)
         if state.destroyed then break end
-        if state.liveRefresh and (state.currentTab == "Home" or state.currentTab == "Player" or state.currentTab == "Farming") then
+        local tab = state.currentTab
+        if state.liveRefresh and state.monitorEnabled[tab] then
             safeCall("periodic status refresh", function()
-                local stats = getCharacterStats()
-                state.lastSnapshot = {
-                    CharacterState = stats.status,
-                    Health = stats.health,
-                    WalkSpeed = stats.speed,
-                    JumpPower = stats.jump,
-                    PlayerCount = #Players:GetPlayers(),
-                }
-                local refreshVisible = state.pageRefreshers[state.currentTab]
+                if tab == "Home" or tab == "Player" then
+                    local stats = getCharacterStats()
+                    state.lastSnapshot = {CharacterState=stats.status, Health=stats.health, WalkSpeed=stats.speed, JumpPower=stats.jump, PlayerCount=#Players:GetPlayers()}
+                end
+                local refreshVisible = state.pageRefreshers[tab]
                 if refreshVisible then refreshVisible() end
             end)
         end
