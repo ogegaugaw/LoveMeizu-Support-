@@ -77,7 +77,7 @@ local state = {
     scale = CONFIG.DefaultScale,
     reduceMotion = false,
     liveRefresh = true,
-    monitorEnabled = {Home=true, Farming=true, Bosses=true, Quests=true, Raids=true, ["Sea Events"]=true, Player=true},
+    monitorEnabled = {Home=true, Farming=true, Bosses=true, Quests=true, Raids=true, ["Sea Events"]=true, Fishing=true, ["Mirage & Race"]=true, ["Volcano Event"]=true, ["Stats & ESP"]=true, ["Fruit & Raid"]=true, Teleport=true, Shopping=true, Player=true, Misc=true},
     glassOpacity = 0.16,
     -- Local-only visual/UI overrides. Each override records the value to restore.
     fullBrightEnabled = false,
@@ -893,7 +893,7 @@ end
 local pages = {}
 local navButtons = {}
 local tabNames = {
-    "Home", "Farming", "Bosses", "Quests", "Raids", "Sea Events", "Player", "Settings", "About",
+    "Home", "Farming", "Bosses", "Quests", "Raids", "Sea Events", "Fishing", "Mirage & Race", "Volcano Event", "Stats & ESP", "Fruit & Raid", "Teleport", "Shopping", "Player", "Misc", "Settings", "About",
 }
 
 local function clearPage()
@@ -1312,6 +1312,271 @@ pages["Sea Events"] = function()
     end, "Read-only observation; no sailing, ship manipulation, or event combat.")
     addCard("Not implemented", "Auto-sail, ship noclip, boat speed manipulation, sea-event combat and Azure Ember automation are not included.")
     refreshSeaEvents()
+end
+
+pages.Fishing = function()
+    addCard("Fishing observer", "Read-only view of locally held fishing tools and visible fishing-related objects. This does not auto-cast, catch, buy bait, or invoke remotes.")
+    local _, toolsText = addStatusCard("Local fishing tools", "Scanning…")
+    local _, objectsText = addStatusCard("Visible fishing objects", "Scanning…")
+    local _, uiText = addStatusCard("Fishing UI text", "Scanning…")
+    local function refreshFishing()
+        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+        local character = LocalPlayer.Character
+        local found = {}
+        local containers = {}
+        if backpack then table.insert(containers, backpack) end
+        if character then table.insert(containers, character) end
+        for _, container in ipairs(containers) do
+            for _, item in ipairs(container:GetChildren()) do
+                    if item:IsA("Tool") then
+                        local n = string.lower(item.Name)
+                        if n:find("fish", 1, true) or n:find("rod", 1, true) or n:find("bait", 1, true) then
+                            table.insert(found, item.Name)
+                        end
+                    end
+            end
+        end
+        table.sort(found)
+        toolsText.Text = #found > 0 and table.concat(found, ", ") or "No locally held fishing-related Tool detected"
+        local names = {"FishingRod", "Fishing Rod", "FishingZone", "FishingSpot", "Fish"}
+        local visible = {}
+        for _, name in ipairs(names) do
+            local object = findObservedInstance(name)
+            if object then table.insert(visible, name .. ": " .. object:GetFullName()) end
+        end
+        objectsText.Text = #visible > 0 and table.concat(visible, "\n") or "No matching fishing-related instance visible to this client"
+        local uiMatches = {}
+        for _, item in ipairs(PlayerGui:GetDescendants()) do
+            if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
+                local lower = string.lower(item.Text)
+                if lower:find("fish", 1, true) or lower:find("bait", 1, true) or lower:find("cast", 1, true) then
+                    table.insert(uiMatches, item.Text:gsub("%s+", " "))
+                    if #uiMatches >= 3 then break end
+                end
+            end
+        end
+        uiText.Text = #uiMatches > 0 and table.concat(uiMatches, " | ") or "No visible fishing-related UI text found"
+    end
+    state.pageRefreshers.Fishing = refreshFishing
+    addToggle("Live fishing observer", true, function(value)
+        state.monitorEnabled.Fishing = value
+        if value then refreshFishing() end
+        showToast("Fishing observer", value and "Local inventory/UI scan enabled." or "Automatic fishing observations paused.")
+    end, "Observes local tools and visible UI only; no fishing automation.")
+    addButton("Refresh fishing observations", function() refreshFishing(); showToast("Fishing scan", "Local fishing observations refreshed.") end)
+    refreshFishing()
+end
+
+pages["Mirage & Race"] = function()
+    addCard("Mirage and race observer", "Checks only named objects and race-related text visible to this client. It cannot confirm server-side race progress.")
+    local names = {"Mirage Island", "MirageIsland", "Blue Gear", "BlueGear", "RaceV4", "Temple of Time", "TempleOfTime"}
+    local labels = {}
+    for _, name in ipairs(names) do local _, label = addStatusCard(name, "Scanning…"); labels[name] = label end
+    local _, raceUi = addStatusCard("Visible race UI", "Scanning…")
+    local function refreshMirageRace()
+        for _, name in ipairs(names) do
+            local object = findObservedInstance(name)
+            labels[name].Text = object and ("Visible locally: " .. object:GetFullName()) or "Not visible to this client"
+        end
+        local found = {}
+        for _, item in ipairs(PlayerGui:GetDescendants()) do
+            if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
+                local lower = string.lower(item.Text)
+                if lower:find("race", 1, true) or lower:find("gear", 1, true) or lower:find("mirage", 1, true) then
+                    table.insert(found, item.Text:gsub("%s+", " "))
+                    if #found >= 3 then break end
+                end
+            end
+        end
+        raceUi.Text = #found > 0 and table.concat(found, " | ") or "No visible race/Mirage-related text found"
+    end
+    state.pageRefreshers["Mirage & Race"] = refreshMirageRace
+    addToggle("Live Mirage/race observer", true, function(value)
+        state.monitorEnabled["Mirage & Race"] = value
+        if value then refreshMirageRace() end
+        showToast("Mirage/race observer", value and "Visible instance/UI scan enabled." or "Automatic observations paused.")
+    end, "No gear collection, race upgrade, teleport, or remote calls.")
+    addButton("Rescan Mirage and race", function() refreshMirageRace(); showToast("Scan complete", "Only local visible objects/UI were checked.") end)
+    refreshMirageRace()
+end
+
+pages["Volcano Event"] = function()
+    addCard("Volcano event observer", "Looks for locally visible volcano, lava, prehistoric and eruption-related objects. Names may differ by experience version.")
+    local names = {"Volcano", "VolcanoEvent", "Volcanic", "Eruption", "Lava", "Prehistoric Island", "PrehistoricIsland", "Dinosaur"}
+    local labels = {}
+    for _, name in ipairs(names) do local _, label = addStatusCard(name, "Scanning…"); labels[name] = label end
+    local function refreshVolcano()
+        for _, name in ipairs(names) do
+            local object = findObservedInstance(name)
+            labels[name].Text = object and ("Visible locally: " .. object:GetFullName()) or "Not visible to this client"
+        end
+    end
+    state.pageRefreshers["Volcano Event"] = refreshVolcano
+    addToggle("Live volcano observer", true, function(value)
+        state.monitorEnabled["Volcano Event"] = value
+        if value then refreshVolcano() end
+        showToast("Volcano observer", value and "Visible event scan enabled." or "Automatic observations paused.")
+    end, "Read-only; does not trigger, enter, or automate an event.")
+    addButton("Rescan volcano event", function() refreshVolcano(); showToast("Volcano scan", "Local instance scan completed.") end)
+    refreshVolcano()
+end
+
+pages["Stats & ESP"] = function()
+    addCard("Player status list", "Read-only list of players and locally observable character stats. This is not an ESP overlay and does not reveal hidden/server-only information.")
+    local _, countText = addStatusCard("Players observed", "Scanning…")
+    local playerRows = {}
+    for index = 1, 12 do local _, label = addStatusCard("Player " .. index, "—"); playerRows[index] = label end
+    local function refreshPlayerList()
+        local localRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local playerList = Players:GetPlayers()
+        table.sort(playerList, function(a, b) return a.Name:lower() < b.Name:lower() end)
+        countText.Text = ("%d players in this client session; list capped at %d."):format(#playerList, #playerRows)
+        for index, label in ipairs(playerRows) do
+            local player = playerList[index]
+            if player then
+                local character = player.Character
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+                local health = humanoid and ("HP " .. math.floor(humanoid.Health) .. "/" .. math.floor(humanoid.MaxHealth)) or "HP unavailable"
+                local distance = localRoot and rootPart and (" • " .. math.floor((rootPart.Position - localRoot.Position).Magnitude) .. " studs") or ""
+                label.Text = player.Name .. (player == LocalPlayer and " (you)" or "") .. " • " .. health .. distance
+            else
+                label.Text = "—"
+            end
+        end
+    end
+    state.pageRefreshers["Stats & ESP"] = refreshPlayerList
+    addToggle("Live player status list", true, function(value)
+        state.monitorEnabled["Stats & ESP"] = value
+        if value then refreshPlayerList() end
+        showToast("Player list", value and "Local player status updates enabled." or "Automatic player status updates paused.")
+    end, "No wallhack, target highlighting, aimbot, or hidden-player data.")
+    addButton("Refresh player list", function() refreshPlayerList() end)
+    refreshPlayerList()
+end
+
+pages["Fruit & Raid"] = function()
+    addCard("Fruit and raid inventory observer", "Lists locally held tools with fruit/raid-related names and visible raid-related instances. It does not buy, activate, awaken, or start anything.")
+    local _, fruitText = addStatusCard("Fruit-related tools", "Scanning…")
+    local _, raidText = addStatusCard("Raid-related tools", "Scanning…")
+    local _, objectsText = addStatusCard("Visible raid objects", "Scanning…")
+    local function refreshFruitRaid()
+        local containers = {}
+        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if backpack then table.insert(containers, backpack) end
+        if LocalPlayer.Character then table.insert(containers, LocalPlayer.Character) end
+        local fruits, raids = {}, {}
+        for _, container in ipairs(containers) do
+            for _, item in ipairs(container:GetChildren()) do
+                    if item:IsA("Tool") then
+                        local lower = string.lower(item.Name)
+                        if lower:find("fruit", 1, true) or lower:find("blox", 1, true) then table.insert(fruits, item.Name) end
+                        if lower:find("raid", 1, true) or lower:find("chip", 1, true) or lower:find("microchip", 1, true) or lower:find("awakening", 1, true) then table.insert(raids, item.Name) end
+                    end
+            end
+        end
+        table.sort(fruits); table.sort(raids)
+        fruitText.Text = #fruits > 0 and table.concat(fruits, ", ") or "No fruit-related Tool detected locally"
+        raidText.Text = #raids > 0 and table.concat(raids, ", ") or "No raid-related Tool detected locally"
+        local names = {"RaidIsland", "Raid Island", "Dungeon", "Microchip", "Awakening"}
+        local found = {}
+        for _, name in ipairs(names) do local object = findObservedInstance(name); if object then table.insert(found, name .. ": " .. object:GetFullName()) end end
+        objectsText.Text = #found > 0 and table.concat(found, "\n") or "No matching raid object visible to this client"
+    end
+    state.pageRefreshers["Fruit & Raid"] = refreshFruitRaid
+    addToggle("Live fruit/raid observer", true, function(value)
+        state.monitorEnabled["Fruit & Raid"] = value
+        if value then refreshFruitRaid() end
+        showToast("Fruit/raid observer", value and "Local inventory scan enabled." or "Automatic observations paused.")
+    end, "Read-only local inventory and visible object scan.")
+    addButton("Refresh fruit/raid inventory", function() refreshFruitRaid() end)
+    refreshFruitRaid()
+end
+
+pages.Teleport = function()
+    addCard("Destination observer", "Lists destination-like BaseParts visible under Workspace._WorldOrigin.Locations. This tab does not teleport or move the character.")
+    local _, locationText = addStatusCard("Visible locations", "Scanning…")
+    local _, spawnText = addStatusCard("Spawn-related objects", "Scanning…")
+    local function refreshLocations()
+        local worldOrigin = Workspace:FindFirstChild("_WorldOrigin")
+        local locations = worldOrigin and worldOrigin:FindFirstChild("Locations")
+        local names = {}
+        if locations then
+            for _, item in ipairs(locations:GetChildren()) do
+                if item:IsA("BasePart") then table.insert(names, item.Name) end
+            end
+        end
+        table.sort(names)
+        local shown = {}
+        for index = 1, math.min(#names, 18) do shown[index] = names[index] end
+        locationText.Text = #shown > 0 and table.concat(shown, ", ") or "No visible location markers found"
+        local spawnNames = {"SpawnPoint", "SpawnLocation", "SetSpawnPoint", "HomePoint"}
+        local found = {}
+        for _, name in ipairs(spawnNames) do local object = findObservedInstance(name); if object then table.insert(found, name .. ": " .. object:GetFullName()) end end
+        spawnText.Text = #found > 0 and table.concat(found, "\n") or "No matching spawn-related object visible"
+    end
+    state.pageRefreshers.Teleport = refreshLocations
+    addToggle("Live destination observer", true, function(value)
+        state.monitorEnabled.Teleport = value
+        if value then refreshLocations() end
+        showToast("Destination observer", value and "Location scan enabled." or "Automatic location scans paused.")
+    end, "No teleport, server hopping, or character movement is performed.")
+    addButton("Refresh visible destinations", function() refreshLocations() end)
+    refreshLocations()
+end
+
+pages.Shopping = function()
+    addCard("Shop and currency UI observer", "Reads visible local UI text that appears related to currency or shops. It does not purchase items or query private server data.")
+    local _, currencyText = addStatusCard("Visible currency text", "Scanning…")
+    local _, shopText = addStatusCard("Visible shop text", "Scanning…")
+    local function refreshShopUI()
+        local currency, shops = {}, {}
+        for _, item in ipairs(PlayerGui:GetDescendants()) do
+            if item:IsA("TextLabel") and item.Visible and item.Text ~= "" then
+                local textValue = item.Text:gsub("%s+", " ")
+                local lower = string.lower(textValue)
+                if lower:find("beli", 1, true) or lower:find("money", 1, true) or lower:find("fragment", 1, true) or lower:find("cash", 1, true) then
+                    table.insert(currency, textValue)
+                end
+                if lower:find("shop", 1, true) or lower:find("buy", 1, true) or lower:find("price", 1, true) then
+                    table.insert(shops, textValue)
+                end
+            end
+            if #currency >= 4 and #shops >= 4 then break end
+        end
+        currencyText.Text = #currency > 0 and table.concat(currency, " | ") or "No visible currency-related text found"
+        shopText.Text = #shops > 0 and table.concat(shops, " | ") or "No visible shop-related text found"
+    end
+    state.pageRefreshers.Shopping = refreshShopUI
+    addToggle("Live shop UI observer", true, function(value)
+        state.monitorEnabled.Shopping = value
+        if value then refreshShopUI() end
+        showToast("Shop UI observer", value and "Visible shop/currency text scan enabled." or "Automatic UI scans paused.")
+    end, "Visible UI text only; no purchases or currency manipulation.")
+    addButton("Refresh visible shop UI", function() refreshShopUI() end)
+    refreshShopUI()
+end
+
+pages.Misc = function()
+    addCard("Local diagnostics", "Supported client-side diagnostics and UI preferences only. Executor hooks, anti-admin evasion, anti-AFK spoofing and hidden-property changes are not included.")
+    local _, runtimeText = addStatusCard("Runtime", "Reading…")
+    local _, inputText = addStatusCard("Input mode", "Reading…")
+    local _, guiText = addStatusCard("UI state", "Reading…")
+    local function refreshDiagnostics()
+        runtimeText.Text = (RunService:IsStudio() and "Roblox Studio" or "Roblox client") .. " • PlaceId " .. tostring(game.PlaceId)
+        inputText.Text = UserInputService.TouchEnabled and "Touch enabled" or "Touch unavailable"
+        if UserInputService.MouseEnabled then inputText.Text ..= " • Mouse enabled" end
+        guiText.Text = (state.menuVisible and "Menu visible" or "Menu hidden") .. " • " .. (state.destroyed and "Cleaning up" or "Connections active")
+    end
+    state.pageRefreshers.Misc = refreshDiagnostics
+    addToggle("Live local diagnostics", true, function(value)
+        state.monitorEnabled.Misc = value
+        if value then refreshDiagnostics() end
+        showToast("Local diagnostics", value and "Diagnostics updates enabled." or "Automatic diagnostics paused.")
+    end, "Reports supported local runtime/input state only.")
+    addButton("Refresh local diagnostics", function() refreshDiagnostics() end)
+    addButton("Return to Home", function() showTab("Home") end)
+    refreshDiagnostics()
 end
 
 pages.Player = function()
