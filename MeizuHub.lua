@@ -907,9 +907,10 @@ end
 
 local function showTab(tabName)
     if not pages[tabName] then return end
+    -- Clear the page being left before changing currentTab so its refresher is removed.
+    clearPage()
     state.currentTab = tabName
     pageHeading.Text = tabName
-    clearPage()
     safeCall("render tab " .. tabName, pages[tabName])
     for name, button in pairs(navButtons) do
         local selected = name == tabName
@@ -1358,7 +1359,7 @@ pages.Fishing = function()
         uiText.Text = #uiMatches > 0 and table.concat(uiMatches, " | ") or "No visible fishing-related UI text found"
     end
     state.pageRefreshers.Fishing = refreshFishing
-    addToggle("Live fishing observer", true, function(value)
+    addToggle("Live fishing observer", state.monitorEnabled.Fishing, function(value)
         state.monitorEnabled.Fishing = value
         if value then refreshFishing() end
         showToast("Fishing observer", value and "Local inventory/UI scan enabled." or "Automatic fishing observations paused.")
@@ -1391,7 +1392,7 @@ pages["Mirage & Race"] = function()
         raceUi.Text = #found > 0 and table.concat(found, " | ") or "No visible race/Mirage-related text found"
     end
     state.pageRefreshers["Mirage & Race"] = refreshMirageRace
-    addToggle("Live Mirage/race observer", true, function(value)
+    addToggle("Live Mirage/race observer", state.monitorEnabled["Mirage & Race"], function(value)
         state.monitorEnabled["Mirage & Race"] = value
         if value then refreshMirageRace() end
         showToast("Mirage/race observer", value and "Visible instance/UI scan enabled." or "Automatic observations paused.")
@@ -1412,7 +1413,7 @@ pages["Volcano Event"] = function()
         end
     end
     state.pageRefreshers["Volcano Event"] = refreshVolcano
-    addToggle("Live volcano observer", true, function(value)
+    addToggle("Live volcano observer", state.monitorEnabled["Volcano Event"], function(value)
         state.monitorEnabled["Volcano Event"] = value
         if value then refreshVolcano() end
         showToast("Volcano observer", value and "Visible event scan enabled." or "Automatic observations paused.")
@@ -1446,7 +1447,7 @@ pages["Stats & ESP"] = function()
         end
     end
     state.pageRefreshers["Stats & ESP"] = refreshPlayerList
-    addToggle("Live player status list", true, function(value)
+    addToggle("Live player status list", state.monitorEnabled["Stats & ESP"], function(value)
         state.monitorEnabled["Stats & ESP"] = value
         if value then refreshPlayerList() end
         showToast("Player list", value and "Local player status updates enabled." or "Automatic player status updates paused.")
@@ -1484,7 +1485,7 @@ pages["Fruit & Raid"] = function()
         objectsText.Text = #found > 0 and table.concat(found, "\n") or "No matching raid object visible to this client"
     end
     state.pageRefreshers["Fruit & Raid"] = refreshFruitRaid
-    addToggle("Live fruit/raid observer", true, function(value)
+    addToggle("Live fruit/raid observer", state.monitorEnabled["Fruit & Raid"], function(value)
         state.monitorEnabled["Fruit & Raid"] = value
         if value then refreshFruitRaid() end
         showToast("Fruit/raid observer", value and "Local inventory scan enabled." or "Automatic observations paused.")
@@ -1516,7 +1517,7 @@ pages.Teleport = function()
         spawnText.Text = #found > 0 and table.concat(found, "\n") or "No matching spawn-related object visible"
     end
     state.pageRefreshers.Teleport = refreshLocations
-    addToggle("Live destination observer", true, function(value)
+    addToggle("Live destination observer", state.monitorEnabled.Teleport, function(value)
         state.monitorEnabled.Teleport = value
         if value then refreshLocations() end
         showToast("Destination observer", value and "Location scan enabled." or "Automatic location scans paused.")
@@ -1548,7 +1549,7 @@ pages.Shopping = function()
         shopText.Text = #shops > 0 and table.concat(shops, " | ") or "No visible shop-related text found"
     end
     state.pageRefreshers.Shopping = refreshShopUI
-    addToggle("Live shop UI observer", true, function(value)
+    addToggle("Live shop UI observer", state.monitorEnabled.Shopping, function(value)
         state.monitorEnabled.Shopping = value
         if value then refreshShopUI() end
         showToast("Shop UI observer", value and "Visible shop/currency text scan enabled." or "Automatic UI scans paused.")
@@ -1569,7 +1570,7 @@ pages.Misc = function()
         guiText.Text = (state.menuVisible and "Menu visible" or "Menu hidden") .. " • " .. (state.destroyed and "Cleaning up" or "Connections active")
     end
     state.pageRefreshers.Misc = refreshDiagnostics
-    addToggle("Live local diagnostics", true, function(value)
+    addToggle("Live local diagnostics", state.monitorEnabled.Misc, function(value)
         state.monitorEnabled.Misc = value
         if value then refreshDiagnostics() end
         showToast("Local diagnostics", value and "Diagnostics updates enabled." or "Automatic diagnostics paused.")
