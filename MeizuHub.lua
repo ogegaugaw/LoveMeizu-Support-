@@ -117,12 +117,12 @@ local function disconnectBucket(bucket)
 end
 
 local function safeCall(label, callback)
-    local ok, result = xpcall(callback, debug.traceback)
+    local ok, result, detail = xpcall(callback, debug.traceback)
     if not ok then
         warn(("[Meizu Hub] %s failed:\n%s"):format(label, tostring(result)))
         return false, result
     end
-    return true, result
+    return true, result, detail
 end
 
 local function getTheme()
@@ -590,7 +590,7 @@ local function addButton(labelText, callback)
     return button
 end
 
-local function addToggle(labelText, initialValue, callback, hint)
+local function addToggle(labelText, initialValue, callback, hint, statusProvider)
     local row = Instance.new("Frame")
     row.Name = "Toggle_" .. labelText:gsub("%W", "")
     row.Size = UDim2.new(1, -2, 0, hint and 66 or 48)
@@ -626,9 +626,21 @@ local function addToggle(labelText, initialValue, callback, hint)
         hintLabel.Parent = row
     end
 
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "ToggleStatus"
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Position = UDim2.new(1, -64, 0, 3)
+    statusLabel.Size = UDim2.fromOffset(52, 13)
+    statusLabel.Font = Enum.Font.GothamBold
+    statusLabel.Text = "OFF"
+    statusLabel.TextColor3 = Color3.fromRGB(157, 165, 187)
+    statusLabel.TextSize = 9
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Center
+    statusLabel.Parent = row
+
     local toggleButton = Instance.new("TextButton")
     toggleButton.AnchorPoint = Vector2.new(1, 0.5)
-    toggleButton.Position = UDim2.new(1, -10, 0.5, 0)
+    toggleButton.Position = UDim2.new(1, -10, 0, hint and 33 or 30)
     toggleButton.Size = UDim2.fromOffset(44, 25)
     toggleButton.BackgroundColor3 = Color3.fromRGB(68, 73, 91)
     toggleButton.BorderSizePixel = 0
@@ -646,7 +658,8 @@ local function addToggle(labelText, initialValue, callback, hint)
     addCorner(knob, 10)
 
     local value = initialValue == true
-    local function render()
+    local statusOverride
+    local function render(forcedStatus)
         if value then
             tween(toggleButton, {BackgroundColor3 = getTheme().Accent}, 0.12)
             tween(knob, {Position = UDim2.new(1, -22, 0, 3)}, 0.12)
@@ -654,19 +667,48 @@ local function addToggle(labelText, initialValue, callback, hint)
             tween(toggleButton, {BackgroundColor3 = Color3.fromRGB(68, 73, 91)}, 0.12)
             tween(knob, {Position = UDim2.fromOffset(3, 3)}, 0.12)
         end
+        local displayStatus = forcedStatus or statusOverride
+        if not displayStatus and statusProvider then
+            local providerOk, providerValue = pcall(statusProvider)
+            if not providerOk then
+                displayStatus = "ERROR"
+            elseif type(providerValue) == "string" then
+                displayStatus = providerValue
+            elseif type(providerValue) == "boolean" then
+                displayStatus = providerValue and "ON" or "OFF"
+            else
+                displayStatus = "UNAVAILABLE"
+            end
+        end
+        displayStatus = displayStatus or (value and "ON" or "OFF")
+        if displayStatus ~= "ON" and displayStatus ~= "OFF" and displayStatus ~= "ERROR" and displayStatus ~= "UNAVAILABLE" then
+            displayStatus = "UNAVAILABLE"
+        end
+        statusLabel.Text = displayStatus
+        local statusColors = {
+            ON = Color3.fromRGB(105, 230, 173),
+            OFF = Color3.fromRGB(157, 165, 187),
+            ERROR = Color3.fromRGB(255, 115, 125),
+            UNAVAILABLE = Color3.fromRGB(255, 190, 95),
+        }
+        statusLabel.TextColor3 = statusColors[displayStatus]
     end
     render()
 
     trackConnection(toggleButton.Activated:Connect(function()
+        if state.destroyed then return end
         local nextValue = not value
-        local ok, err = safeCall("toggle " .. labelText, function()
-            callback(nextValue)
+        local ok, result, detail = safeCall("toggle " .. labelText, function()
+            return callback(nextValue)
         end)
-        if ok then
+        if ok and result ~= false then
             value = nextValue
+            statusOverride = nil
             render()
         else
-            showToast("Toggle failed", tostring(err):sub(1, 110))
+            statusOverride = (ok and detail == "UNAVAILABLE") and "UNAVAILABLE" or "ERROR"
+            render(statusOverride)
+            showToast(statusOverride == "UNAVAILABLE" and "Feature unavailable" or "Toggle failed", tostring(detail or result or "Unable to change feature state."):sub(1, 110))
         end
     end))
     return {
@@ -674,8 +716,9 @@ local function addToggle(labelText, initialValue, callback, hint)
         Set = function(newValue)
             newValue = newValue == true
             if value == newValue then return end
-            local ok = safeCall("set toggle " .. labelText, function() callback(newValue) end)
-            if ok then value = newValue; render() end
+            local ok, result, detail = safeCall("set toggle " .. labelText, function() return callback(newValue) end)
+            if ok and result ~= false then value = newValue; statusOverride = nil; render()
+            else statusOverride = (ok and detail == "UNAVAILABLE") and "UNAVAILABLE" or "ERROR"; render(statusOverride) end
         end,
     }
 end
@@ -907,10 +950,9 @@ end
 
 local function showTab(tabName)
     if not pages[tabName] then return end
-    -- Clear the page being left before changing currentTab so its refresher is removed.
-    clearPage()
     state.currentTab = tabName
     pageHeading.Text = tabName
+    clearPage()
     safeCall("render tab " .. tabName, pages[tabName])
     for name, button in pairs(navButtons) do
         local selected = name == tabName
@@ -1207,7 +1249,10 @@ pages.Home = function()
         state.monitorEnabled.Home = value
         if value then refreshHomeStatus() end
         showToast("Home status monitor", value and "Enabled: Home observations update automatically." or "Disabled: automatic Home updates stopped.")
-    end, "Controls periodic character/session/world-clock observations on Home.")
+    end, "Controls periodic character/session/world-clock observations on Home.", function()
+        if not state.monitorEnabled.Home then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh status now", function()
         refreshHomeStatus()
         showToast("Status refreshed", "Values were read from the current client.")
@@ -1225,7 +1270,10 @@ pages.Farming = function()
         state.monitorEnabled.Farming = value
         if value then refreshEnemySummary() end
         showToast("Enemy monitor", value and "Enabled: read-only scan updates while this tab is open." or "Disabled: automatic enemy scans stopped.")
-    end, "Only reads visible Workspace.Enemies; it does not target or attack NPCs.")
+    end, "Only reads visible Workspace.Enemies; it does not target or attack NPCs.", function()
+        if not state.monitorEnabled.Farming then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh visible enemy count", function()
         refreshEnemySummary()
         showToast("Enemy monitor refreshed", "Read-only Workspace scan completed.")
@@ -1251,7 +1299,10 @@ pages.Bosses = function()
         state.monitorEnabled.Bosses = value
         if value then refreshBosses() end
         showToast("Boss monitor", value and "Enabled: visible boss scan updates while this tab is open." or "Disabled: automatic boss scans stopped.")
-    end, "Read-only; does not teleport to, target, or attack bosses.")
+    end, "Read-only; does not teleport to, target, or attack bosses.", function()
+        if not state.monitorEnabled.Bosses then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Rescan visible bosses", function() refreshBosses(); showToast("Boss scan complete", "Only locally visible instances were checked.") end)
     refreshBosses()
 end
@@ -1265,7 +1316,10 @@ pages.Quests = function()
         state.monitorEnabled.Quests = value
         if value then refreshQuestText() end
         showToast("Quest UI observer", value and "Enabled: visible quest text refreshes on this tab." or "Disabled: automatic quest UI scans stopped.")
-    end, "Reads visible text only; it cannot verify server progress or complete quests.")
+    end, "Reads visible text only; it cannot verify server progress or complete quests.", function()
+        if not state.monitorEnabled.Quests then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh quest UI observation", function() refreshQuestText(); showToast("Quest observation refreshed", "Visible client UI text was scanned; server progress was not queried.") end)
     addCard("Compatibility", "The source's Tushita/Yama, Skull Guitar, Cursed Dual Katana, race, Bartilo/Citizen and other quest automation depends on private game state and server calls; it is not enabled here.")
     refreshQuestText()
@@ -1289,7 +1343,10 @@ pages.Raids = function()
         state.monitorEnabled.Raids = value
         if value then refreshRaidObserver() end
         showToast("Raid observer", value and "Enabled: local inventory and visible names refresh on this tab." or "Disabled: automatic raid observations stopped.")
-    end, "Does not buy chips, start raids, awaken fruits, or call game remotes.")
+    end, "Does not buy chips, start raids, awaken fruits, or call game remotes.", function()
+        if not state.monitorEnabled.Raids then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh tool inventory", function() refreshRaidObserver(); showToast("Raid observation refreshed", "Only local Tool instances and visible names were inspected.") end)
     refreshRaidObserver()
 end
@@ -1310,7 +1367,10 @@ pages["Sea Events"] = function()
         state.monitorEnabled["Sea Events"] = value
         if value then refreshSeaEvents() end
         showToast("Sea-event monitor", value and "Enabled: visible event scan updates while this tab is open." or "Disabled: automatic sea-event scans stopped.")
-    end, "Read-only observation; no sailing, ship manipulation, or event combat.")
+    end, "Read-only observation; no sailing, ship manipulation, or event combat.", function()
+        if not state.monitorEnabled["Sea Events"] then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addCard("Not implemented", "Auto-sail, ship noclip, boat speed manipulation, sea-event combat and Azure Ember automation are not included.")
     refreshSeaEvents()
 end
@@ -1363,7 +1423,10 @@ pages.Fishing = function()
         state.monitorEnabled.Fishing = value
         if value then refreshFishing() end
         showToast("Fishing observer", value and "Local inventory/UI scan enabled." or "Automatic fishing observations paused.")
-    end, "Observes local tools and visible UI only; no fishing automation.")
+    end, "Observes local tools and visible UI only; no fishing automation.", function()
+        if not state.monitorEnabled.Fishing then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh fishing observations", function() refreshFishing(); showToast("Fishing scan", "Local fishing observations refreshed.") end)
     refreshFishing()
 end
@@ -1396,7 +1459,10 @@ pages["Mirage & Race"] = function()
         state.monitorEnabled["Mirage & Race"] = value
         if value then refreshMirageRace() end
         showToast("Mirage/race observer", value and "Visible instance/UI scan enabled." or "Automatic observations paused.")
-    end, "No gear collection, race upgrade, teleport, or remote calls.")
+    end, "No gear collection, race upgrade, teleport, or remote calls.", function()
+        if not state.monitorEnabled["Mirage & Race"] then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Rescan Mirage and race", function() refreshMirageRace(); showToast("Scan complete", "Only local visible objects/UI were checked.") end)
     refreshMirageRace()
 end
@@ -1417,7 +1483,10 @@ pages["Volcano Event"] = function()
         state.monitorEnabled["Volcano Event"] = value
         if value then refreshVolcano() end
         showToast("Volcano observer", value and "Visible event scan enabled." or "Automatic observations paused.")
-    end, "Read-only; does not trigger, enter, or automate an event.")
+    end, "Read-only; does not trigger, enter, or automate an event.", function()
+        if not state.monitorEnabled["Volcano Event"] then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Rescan volcano event", function() refreshVolcano(); showToast("Volcano scan", "Local instance scan completed.") end)
     refreshVolcano()
 end
@@ -1451,7 +1520,10 @@ pages["Stats & ESP"] = function()
         state.monitorEnabled["Stats & ESP"] = value
         if value then refreshPlayerList() end
         showToast("Player list", value and "Local player status updates enabled." or "Automatic player status updates paused.")
-    end, "No wallhack, target highlighting, aimbot, or hidden-player data.")
+    end, "No wallhack, target highlighting, aimbot, or hidden-player data.", function()
+        if not state.monitorEnabled["Stats & ESP"] then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh player list", function() refreshPlayerList() end)
     refreshPlayerList()
 end
@@ -1489,7 +1561,10 @@ pages["Fruit & Raid"] = function()
         state.monitorEnabled["Fruit & Raid"] = value
         if value then refreshFruitRaid() end
         showToast("Fruit/raid observer", value and "Local inventory scan enabled." or "Automatic observations paused.")
-    end, "Read-only local inventory and visible object scan.")
+    end, "Read-only local inventory and visible object scan.", function()
+        if not state.monitorEnabled["Fruit & Raid"] then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh fruit/raid inventory", function() refreshFruitRaid() end)
     refreshFruitRaid()
 end
@@ -1521,7 +1596,10 @@ pages.Teleport = function()
         state.monitorEnabled.Teleport = value
         if value then refreshLocations() end
         showToast("Destination observer", value and "Location scan enabled." or "Automatic location scans paused.")
-    end, "No teleport, server hopping, or character movement is performed.")
+    end, "No teleport, server hopping, or character movement is performed.", function()
+        if not state.monitorEnabled.Teleport then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh visible destinations", function() refreshLocations() end)
     refreshLocations()
 end
@@ -1574,7 +1652,10 @@ pages.Misc = function()
         state.monitorEnabled.Misc = value
         if value then refreshDiagnostics() end
         showToast("Local diagnostics", value and "Diagnostics updates enabled." or "Automatic diagnostics paused.")
-    end, "Reports supported local runtime/input state only.")
+    end, "Reports supported local runtime/input state only.", function()
+        if not state.monitorEnabled.Misc then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     addButton("Refresh local diagnostics", function() refreshDiagnostics() end)
     addButton("Return to Home", function() showTab("Home") end)
     refreshDiagnostics()
@@ -1596,7 +1677,10 @@ pages.Player = function()
         state.monitorEnabled.Player = value
         if value then refreshCharacter() end
         showToast("Character monitor", value and "Enabled: health and movement values update while this tab is open." or "Disabled: automatic character reads stopped.")
-    end, "Read-only health, WalkSpeed and JumpPower; this does not modify movement.")
+    end, "Read-only health, WalkSpeed and JumpPower; this does not modify movement.", function()
+        if not state.monitorEnabled.Player then return "OFF" end
+        return state.liveRefresh and "ON" or "UNAVAILABLE"
+    end)
     refreshCharacter()
     addButton("Refresh character values", refreshCharacter)
     addCard("Not included", "No-clip, fly, infinite energy/range, dash cooldown changes, aimbot, player targeting, PvP automation, or forced movement.")
@@ -1624,7 +1708,7 @@ pages.Settings = function()
     end, "Reduces UI tween animations; useful on lower-powered phones.")
     addToggle("Live status refresh", state.liveRefresh, function(value)
         state.liveRefresh = value
-        showToast("Live status refresh", value and "Periodic Home/Player/Farming refresh enabled." or "Periodic refresh paused; use Refresh buttons manually.")
+        showToast("Live status refresh", value and "Periodic observers enabled where their individual toggles are ON." or "Periodic refresh paused; observer badges show UNAVAILABLE until resumed. Manual refresh buttons remain available.")
     end, "Master switch for periodic read-only updates across all monitor tabs. Manual refresh buttons remain available.")
     addToggle("Full Bright (local Lighting)", state.fullBrightEnabled, function(value)
         setFullBright(value)
